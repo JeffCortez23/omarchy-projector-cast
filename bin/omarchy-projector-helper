@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# Helper backend para Proyector & Duplicación de Pantalla (Epson / Miracast / Smart TVs)
+# Soporta auto-detección de monitor nativo, múltiples aspect ratios (16:9, 16:10, 21:9, 32:9, 4:3),
+# diagnóstico de dependencias y firewall.
+
+set -eo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-projector"
+mkdir -p "$STATE_DIR"
+
+check_firewall() {
+  local ufw_active="false"
+  local p2p_allowed="false"
+  local rtsp_allowed="false"
+
+  if command -v ufw >/dev/null 2>&1; then
+    local ufw_out
+    ufw_out=$(sudo -n ufw status 2>/dev/null || true)
+    if echo "$ufw_out" | grep -qi "Status: active"; then
+      ufw_active="true"
+      if echo "$ufw_out" | grep -qiE "7236/tcp.*ALLOW"; then
+        rtsp_allowed="true"
+      fi
+      if echo "$ufw_out" | grep -qiE "(p2p-\+|p2p).*ALLOW"; then
+        p2p_allowed="true"
+      fi
+    else
+      ufw_active="false"
+      p2p_allowed="true"
+      rtsp_allowed="true"
+    fi
+  else
+    ufw_active="false"
+    p2p_allowed="true"
+    rtsp_allowed="true"
+  fi
+
+  local firewall_ok="false"
+  if [ "$ufw_active" = "false" ] || ([ "$p2p_allowed" = "true" ] && [ "$rtsp_allowed" = "true" ]); then
+    firewall_ok="true"
+  fi
+
+  printf '{"ufwActive":%s,"rtspAllowed":%s,"p2pAllowed":%s,"firewallOk":%s}' "$ufw_active" "$rtsp_allowed" "$p2p_allowed" "$firewall_ok"
+}
+
+get_primary_monitor_info() {
+  local monitors_json
+  monitors_json=$(hyprctl monitors -j 2>/dev/null || echo "[]")
+
+  # Preferir monitor con foco o el primero disponible
+  local mon_info
+  mon_info=$(echo "$monitors_json" | jq -c '(.[] | select(.focused == true)) // .[0] // {}' 2>/dev/null || echo "{}")
+
+  echo "$mon_info"
+}
+
+cmd_status() {
+  local gnd_installed="false"
+  if command -v gnome-network-displays >/dev/null 2>&1; then
+    gnd_installed="true"
+  fi
+
+  local gnd_running="false"
+  if pgrep -x "gnome-network-d" >/dev/null 2>&1 || pgrep -f "gnome-network-displays" >/dev/null 2>&1; then
+    gnd_running="true"
+  fi
+
+  local mon_info
+  mon_info=$(get_primary_monitor_info)
+
+  local primary_name="eDP-1"
+  local cur_res="1920x1080@60"
+  local cur_scale="1"
+
+  if [ -n "$mon_info" ] && [ "$mon_info" != "{}" ]; then
+    primary_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"')
+    local w h r s
+    w=$(echo "$mon_info" | jq -r '.width // 1920')
+    h=$(echo "$mon_info" | jq -r '.height // 1080')
+    r=$(echo "$mon_info" | jq -r '.refreshRate // 60' | cut -d. -f1)
+    s=$(echo "$mon_info" | jq -r '.scale // 1')
+    cur_res="${w}x${h}@${r}"
+    cur_scale="$s"
+  fi
+
+  # Guardar o leer resolución nativa de fábrica de este monitor
+  local native_file="$STATE_DIR/native_${primary_name}.json"
+  local native_res="$cur_res"
+  local native_scale="$cur_scale"
+
+  if [ -f "$native_file" ]; then
+    native_res=$(jq -r '.resolution // "1920x1080@60"' "$native_file" 2>/dev/null || echo "$cur_res")
+    native_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "$cur_scale")
+  else
+    # Si no existe, guardar el modo de mayor resolución de availableModes o el actual
+    local best_mode
+    best_mode=$(echo "$mon_info" | jq -r '.availableModes[0] // empty' 2>/dev/null || true)
+    if [ -n "$best_mode" ]; then
+      native_res=$(echo "$best_mode" | sed -E "s/@([0-9]+)(\\.[0-9]+)?Hz/@\1/" | sed "s/Hz//")
+    fi
+    printf '{"resolution":"%s","scale":"%s"}\n' "$native_res" "$native_scale" > "$native_file"
+  fi
+
+  local p2p_supported="false"
+  local p2p_interface="wlp1s0"
+  if command -v iw >/dev/null 2>&1 && iw dev 2>/dev/null | grep -qi "P2P-device"; then
+    p2p_supported="true"
+  elif ip link show 2>/dev/null | grep -qiE "p2p-|wlan|wlp"; then
+    p2p_supported="true"
+  fi
+
+  local fw_json
+  fw_json=$(check_firewall)
+
+  printf '{"gndInstalled":%s,"gndRunning":%s,"primaryMonitor":"%s","currentResolution":"%s","currentScale":"%s","nativeResolution":"%s","nativeScale":"%s","p2pSupported":%s,"p2pInterface":"%s","firewall":%s}\n' \
+    "$gnd_installed" "$gnd_running" "$primary_name" "$cur_res" "$cur_scale" "$native_res" "$native_scale" "$p2p_supported" "$p2p_interface" "$fw_json"
+}
+
+cmd_set_res() {
+  local mode="${1:-1920x1080@60}"
+  local scale="${2:-1}"
+
+  if [[ ! "$mode" =~ @ ]]; then
+    mode="${mode}@60"
+  fi
+
+  # Auto escala inteligente para pantallas de alta densidad si no se especificó escala
+  if [ "$scale" = "1" ] || [ -z "$scale" ]; then
+    if [[ "$mode" =~ 3840x2160 ]]; then
+      scale="2"
+    elif [[ "$mode" =~ 2560x1440 ]] || [[ "$mode" =~ 2560x1600 ]]; then
+      scale="1.25"
+    elif [[ "$mode" =~ 5120x1440 ]]; then
+      scale="1.25"
+    fi
+  fi
+
+  local mon_info
+  mon_info=$(get_primary_monitor_info)
+  local mon_name
+  mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+
+  # Intentar primero con la API Lua de Omarchy Hyprland
+  if ! hyprctl eval "hl.monitor({ output = \"$mon_name\", mode = \"$mode\", position = \"0x0\", scale = $scale, transform = 0 })" >/dev/null 2>&1; then
+    # Fallback a comando estándar de Hyprland
+    hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
+  fi
+
+  echo "res_set:$mode:$scale"
+}
+
+cmd_reset_res() {
+  local mon_info
+  mon_info=$(get_primary_monitor_info)
+  local mon_name
+  mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+
+  local native_file="$STATE_DIR/native_${mon_name}.json"
+  local target_res="1920x1080@60"
+  local target_scale="1"
+
+  if [ -f "$native_file" ]; then
+    target_res=$(jq -r '.resolution // "1920x1080@60"' "$native_file" 2>/dev/null || echo "1920x1080@60")
+    target_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "1")
+  fi
+
+  cmd_set_res "$target_res" "$target_scale"
+}
+
+cmd_launch() {
+  if ! command -v gnome-network-displays >/dev/null 2>&1; then
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send -u critical "Proyector & Cast" "GNOME Network Displays no está instalado.\nInstálalo con: sudo pacman -S gnome-network-displays"
+    fi
+    echo "not_installed"
+    return 1
+  fi
+
+  if pgrep -f "gnome-network-displays" >/dev/null 2>&1; then
+    hyprctl dispatch focuswindow "class:gnome-network-displays" >/dev/null 2>&1 || true
+  else
+    nohup gnome-network-displays >/dev/null 2>&1 &
+  fi
+  echo "launched"
+}
+
+cmd_stop() {
+  pkill -f "gnome-network-displays" >/dev/null 2>&1 || true
+  echo "stopped"
+}
+
+cmd_fix_firewall() {
+  if command -v ufw >/dev/null 2>&1; then
+    if sudo -n true 2>/dev/null; then
+      sudo ufw allow 7236/tcp comment 'Miracast-RTSP' >/dev/null 2>&1 || true
+      sudo ufw allow in on p2p-+ comment 'Miracast-P2P' >/dev/null 2>&1 || true
+      echo "ok"
+    elif command -v pkexec >/dev/null 2>&1; then
+      pkexec bash -c "ufw allow 7236/tcp comment 'Miracast-RTSP' && ufw allow in on p2p-+ comment 'Miracast-P2P'" >/dev/null 2>&1 || true
+      echo "ok"
+    else
+      echo "error: no sudo/pkexec"
+      exit 1
+    fi
+  else
+    echo "no-ufw"
+  fi
+}
+
+case "${1:-}" in
+  status)
+    cmd_status
+    ;;
+  set-res)
+    shift
+    cmd_set_res "$@"
+    ;;
+  reset-res)
+    cmd_reset_res
+    ;;
+  launch)
+    cmd_launch
+    ;;
+  stop)
+    cmd_stop
+    ;;
+  fix-firewall)
+    cmd_fix_firewall
+    ;;
+  *)
+    echo "Usage: $0 {status|set-res <mode> [scale]|reset-res|launch|stop|fix-firewall}"
+    exit 1
+    ;;
+esac

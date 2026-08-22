@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "elyefris.projector",
+  "name": "Projector & Cast",
+  "version": "1.0.0",
+  "author": "elyefris",
+  "license": "MIT",
+  "description": "Screen mirroring to Epson projectors, smart TVs, and wireless displays (Miracast) with resolution, scale and multi-aspect ratio presets (16:9, 16:10, 21:9, 32:9, 4:3).",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Projector & Cast",
+    "description": "Fast screen mirroring to Epson classroom projectors and smart TVs with instant resolution switching and HiDPI auto-scaling.",
+    "category": "Display",
+    "aliases": [
+      "projector",
+      "cast",
+      "miracast",
+      "screen-mirror",
+      "epson",
+      "display",
+      "wuxga",
+      "4k"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "language": "auto"
+    },
+    "schema": [
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language / Idioma",
+        "options": ["auto", "es", "en", "pt", "fr", "de", "zh", "ja", "ko"],
+        "defaultValue": "auto"
+      }
+    ]
+  }
+}
