@@ -4,7 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-8_supported-green)](I18n.js)
 
-**Projector & Cast** (`elyefris.projector`) is an official third-party bar widget for **Omarchy Linux** and **Hyprland**. It provides 1-click screen mirroring (Miracast / Wi-Fi Direct) to classroom/auditorium projectors (such as Epson 3LCD laser projectors) and Smart TVs (TCL, Samsung, LG, Sony), with instantaneous resolution switching, intelligent HiDPI scaling, and multi-aspect ratio presets (16:9, 16:10, 21:9, 32:9, 4:3).
+**Projector & Cast** (`io.github.jeffcortez23.omarchy-projector-cast`) is a bar widget and popup panel for **Omarchy Linux** and **Hyprland**. It enables 1-click screen mirroring (Miracast / Wi-Fi Direct) to classroom/auditorium projectors (such as Epson 3LCD laser projectors) and Smart TVs (TCL, Samsung, LG, Sony), with instantaneous resolution switching, intelligent HiDPI auto-scaling, and multi-aspect ratio presets (16:9, 16:10, 21:9, 32:9, 4:3).
+
+![Projector & Cast Preview](preview.png)
 
 ---
 
@@ -47,17 +49,19 @@
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation & Removal
 
-### Via Omaplug / Git Clone
+### Installation via Omarchy CLI
 ```bash
-git clone https://github.com/elyefris/omarchy-projector-cast.git ~/.config/omarchy/plugins/elyefris.projector
-omarchy restart shell
+omarchy plugin add https://github.com/JeffCortez23/omarchy-projector-cast --enable
 ```
 
-Then add `"elyefris.projector"` to your `~/.config/omarchy/shell.json` in `bar.layout.right`.
+### Removal
+```bash
+omarchy plugin remove io.github.jeffcortez23.omarchy-projector-cast --yes
+```
 
 ---
 
 ## 📜 License
-MIT License © 2026 elyefris
+MIT License © 2026 Jeff Cortez

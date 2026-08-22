@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "elyefris.projector",
+  "id": "io.github.jeffcortez23.omarchy-projector-cast",
   "name": "Projector & Cast",
   "version": "1.0.0",
-  "author": "elyefris",
+  "author": "Jeff Cortez",
   "license": "MIT",
   "description": "Screen mirroring to Epson projectors, smart TVs, and wireless displays (Miracast) with resolution, scale and multi-aspect ratio presets (16:9, 16:10, 21:9, 32:9, 4:3).",
   "kinds": [

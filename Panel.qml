@@ -8,8 +8,8 @@ import "I18n.js" as I18n
 
 Panel {
   id: root
-  moduleName: "elyefris.projector"
-  ipcTarget: "elyefris.projector"
+  moduleName: "io.github.jeffcortez23.omarchy-projector-cast"
+  ipcTarget: "io.github.jeffcortez23.omarchy-projector-cast"
   manageIpc: true
 
   readonly property string scriptDir: Qt.resolvedUrl(".").toString().replace("file://", "") + "/bin"
