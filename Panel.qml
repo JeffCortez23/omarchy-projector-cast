@@ -88,7 +88,7 @@ Panel {
   }
 
   function fixFirewall() {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper fix-firewall"]
+    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper copy-firewall-cmd"]
     if (!actionProc.running) actionProc.running = true
   }
 

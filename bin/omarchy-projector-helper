@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helper backend para Proyector & Duplicación de Pantalla (Epson / Miracast / Smart TVs)
 # Soporta auto-detección de monitor nativo, múltiples aspect ratios (16:9, 16:10, 21:9, 32:9, 4:3),
-# diagnóstico de dependencias y firewall.
+# diagnóstico no privilegiado y control seguro de procesos.
 
 set -eo pipefail
 
@@ -10,37 +10,23 @@ mkdir -p "$STATE_DIR"
 
 check_firewall() {
   local ufw_active="false"
-  local p2p_allowed="false"
-  local rtsp_allowed="false"
+  local firewall_ok="true"
 
-  if command -v ufw >/dev/null 2>&1; then
-    local ufw_out
-    ufw_out=$(sudo -n ufw status 2>/dev/null || true)
-    if echo "$ufw_out" | grep -qi "Status: active"; then
+  # Comprobación de estado no privilegiada mediante systemctl
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet ufw 2>/dev/null; then
       ufw_active="true"
-      if echo "$ufw_out" | grep -qiE "7236/tcp.*ALLOW"; then
-        rtsp_allowed="true"
+      # Si UFW está activo, revisar si el puerto 7236/tcp está configurado en user.rules
+      if [ -f /etc/ufw/user.rules ] && grep -q "7236/tcp" /etc/ufw/user.rules 2>/dev/null; then
+        firewall_ok="true"
+      else
+        # Si no se puede leer o no está la regla, marcar como pendiente
+        firewall_ok="false"
       fi
-      if echo "$ufw_out" | grep -qiE "(p2p-\+|p2p).*ALLOW"; then
-        p2p_allowed="true"
-      fi
-    else
-      ufw_active="false"
-      p2p_allowed="true"
-      rtsp_allowed="true"
     fi
-  else
-    ufw_active="false"
-    p2p_allowed="true"
-    rtsp_allowed="true"
   fi
 
-  local firewall_ok="false"
-  if [ "$ufw_active" = "false" ] || ([ "$p2p_allowed" = "true" ] && [ "$rtsp_allowed" = "true" ]); then
-    firewall_ok="true"
-  fi
-
-  printf '{"ufwActive":%s,"rtspAllowed":%s,"p2pAllowed":%s,"firewallOk":%s}' "$ufw_active" "$rtsp_allowed" "$p2p_allowed" "$firewall_ok"
+  printf '{"ufwActive":%s,"firewallOk":%s}' "$ufw_active" "$firewall_ok"
 }
 
 get_primary_monitor_info() {
@@ -61,7 +47,8 @@ cmd_status() {
   fi
 
   local gnd_running="false"
-  if pgrep -x "gnome-network-d" >/dev/null 2>&1 || pgrep -f "gnome-network-displays" >/dev/null 2>&1; then
+  # Coincidencia estricta por nombre exacto de proceso sin patrones difusos
+  if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
     gnd_running="true"
   fi
 
@@ -134,8 +121,6 @@ cmd_set_res() {
       scale="1.5"
     elif [[ "$mode" =~ 2560x1440 ]] || [[ "$mode" =~ 2560x1600 ]] || [[ "$mode" =~ 3440x1440 ]] || [[ "$mode" =~ 5120x1440 ]]; then
       scale="1.25"
-    elif [[ "$mode" =~ 5120x1440 ]]; then
-      scale="1.25"
     fi
   fi
 
@@ -174,13 +159,14 @@ cmd_reset_res() {
 cmd_launch() {
   if ! command -v gnome-network-displays >/dev/null 2>&1; then
     if command -v notify-send >/dev/null 2>&1; then
-      notify-send -u critical "Proyector & Cast" "GNOME Network Displays no está instalado.\nInstálalo con: sudo pacman -S gnome-network-displays"
+      notify-send -u critical "Projector & Cast" "GNOME Network Displays is not installed."
     fi
     echo "not_installed"
     return 1
   fi
 
-  if pgrep -f "gnome-network-displays" >/dev/null 2>&1; then
+  # Coincidencia estricta por nombre exacto de proceso
+  if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
     hyprctl dispatch focuswindow "class:gnome-network-displays" >/dev/null 2>&1 || true
   else
     nohup gnome-network-displays >/dev/null 2>&1 &
@@ -189,26 +175,28 @@ cmd_launch() {
 }
 
 cmd_stop() {
-  pkill -f "gnome-network-displays" >/dev/null 2>&1 || true
+  # Terminar únicamente el binario exacto de gnome-network-displays de manera segura
+  local stopped="false"
+  if pgrep -x "gnome-network-displays" >/dev/null 2>&1; then
+    pkill -x "gnome-network-displays" 2>/dev/null || true
+    stopped="true"
+  fi
+  if pgrep -x "gnome-network-d" >/dev/null 2>&1; then
+    pkill -x "gnome-network-d" 2>/dev/null || true
+    stopped="true"
+  fi
   echo "stopped"
 }
 
-cmd_fix_firewall() {
-  if command -v ufw >/dev/null 2>&1; then
-    if sudo -n true 2>/dev/null; then
-      sudo ufw allow 7236/tcp comment 'Miracast-RTSP' >/dev/null 2>&1 || true
-      sudo ufw allow in on p2p-+ comment 'Miracast-P2P' >/dev/null 2>&1 || true
-      echo "ok"
-    elif command -v pkexec >/dev/null 2>&1; then
-      pkexec bash -c "ufw allow 7236/tcp comment 'Miracast-RTSP' && ufw allow in on p2p-+ comment 'Miracast-P2P'" >/dev/null 2>&1 || true
-      echo "ok"
-    else
-      echo "error: no sudo/pkexec"
-      exit 1
-    fi
-  else
-    echo "no-ufw"
+cmd_copy_firewall_cmd() {
+  local cmd="sudo ufw allow 7236/tcp comment 'Miracast-RTSP'"
+  if command -v wl-copy >/dev/null 2>&1; then
+    printf "%s" "$cmd" | wl-copy
   fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "Projector & Cast" "Firewall command copied to clipboard:\n$cmd"
+  fi
+  echo "copied"
 }
 
 case "${1:-}" in
@@ -228,11 +216,11 @@ case "${1:-}" in
   stop)
     cmd_stop
     ;;
-  fix-firewall)
-    cmd_fix_firewall
+  copy-firewall-cmd)
+    cmd_copy_firewall_cmd
     ;;
   *)
-    echo "Usage: $0 {status|set-res <mode> [scale]|reset-res|launch|stop|fix-firewall}"
+    echo "Usage: $0 {status|set-res <mode> [scale]|reset-res|launch|stop|copy-firewall-cmd}"
     exit 1
     ;;
 esac

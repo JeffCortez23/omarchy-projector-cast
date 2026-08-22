@@ -21,7 +21,7 @@
   * **4:3 / 5:4 Classic:** `XGA (1024x768)`, `SXGA (1280x1024)`.
 * **🔄 Hardware-Aware Native Auto-Detection:** Automatically detects any laptop or monitor's exact factory resolution and HiDPI scale (1080p, 2.8K, 3.2K, 4K, 5K, ultrawide) and provides a 1-click restore.
 * **🌐 Multilingual Support (i18n):** Auto-detects system locale or allows quick manual switching between **English (EN)**, **Español (ES)**, **Português (PT)**, **Français (FR)**, **Deutsch (DE)**, **中文 (ZH)**, **日本語 (JA)**, and **한국어 (KO)**.
-* **🛠️ Automated Firewall Diagnostics & Fix:** Detects UFW / Miracast RTSP (port 7236/tcp) and Wi-Fi Direct requirements, offering 1-click rule repair.
+* **🛡️ Safe Diagnostics & Process Control:** Non-privileged firewall check (port 7236/tcp) with 1-click rule clipboard helper and exact-match process management.
 * **🪟 Hyprland Universal Compatibility:** Supports Omarchy's Lua runtime API with fallback to standard Hyprland keyword dispatching.
 
 ---
@@ -40,13 +40,12 @@
    ```
    *(Or in standard `hyprland.conf`: `windowrule = float, class:.*[nN]etwork[dD]isplays.*`)*
 
-3. **Firewall (UFW):**
-   If UFW is active, allow RTSP port 7236 and P2P Wi-Fi Direct:
+3. **Firewall (UFW - Optional):**
+   If UFW is active on your machine, allow the RTSP streaming port (7236/tcp):
    ```bash
    sudo ufw allow 7236/tcp comment 'Miracast-RTSP'
-   sudo ufw allow in on p2p-+ comment 'Miracast-P2P'
    ```
-   *(The plugin also includes a 1-click "Fix Firewall" button directly in the UI).*
+   *(The plugin includes a 1-click clipboard button in the UI if UFW is detected active).*
 
 ---
 
