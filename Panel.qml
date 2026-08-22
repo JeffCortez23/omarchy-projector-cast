@@ -34,18 +34,24 @@ Panel {
   property string p2pInterface: "wlp1s0"
   property var firewallState: ({ ufwActive: false, rtspAllowed: true, p2pAllowed: true, firewallOk: true })
 
-  // Presets organizados por Relaciones de Aspecto (16:9, 16:10, 21:9, 32:9, 4:3)
+  // Presets organizados por Relaciones de Aspecto y categorías (16:9, 16:10, 3:2, 21:9, 32:9, 4:3)
   readonly property var resolutionPresets: [
     // 16:9 Televisores y Monitores Estándar
     { label: "1080p", mode: "1920x1080@60", scale: "1", descKey: "res1080pDesc" },
     { label: "2K QHD", mode: "2560x1440@60", scale: "1.25", descKey: "res2kDesc" },
     { label: "4K UHD (2x)", mode: "3840x2160@60", scale: "2", descKey: "res4kDesc" },
+    { label: "5K UHD (2x)", mode: "5120x2880@60", scale: "2", descKey: "res5kDesc" },
     { label: "720p HD", mode: "1280x720@60", scale: "1", descKey: "res720pDesc" },
 
-    // 16:10 Proyectores Láser & Laptops (Epson, WUXGA, etc.)
+    // 16:10 Proyectores Láser & Laptops OLED (Epson, WUXGA, Zenbook, ThinkPad)
     { label: "WXGA (Epson)", mode: "1280x800@60", scale: "1", descKey: "resWxgaDesc" },
     { label: "WUXGA (16:10)", mode: "1920x1200@60", scale: "1", descKey: "resWuxgaDesc" },
+    { label: "2.8K OLED", mode: "2880x1800@60", scale: "1.5", descKey: "res28kDesc" },
+    { label: "3.2K OLED", mode: "3200x2000@60", scale: "1.6", descKey: "res32kDesc" },
     { label: "WQXGA (2K)", mode: "2560x1600@60", scale: "1.25", descKey: "resWqxgaDesc" },
+
+    // 3:2 Productividad (Surface / MateBook)
+    { label: "3K (3:2)", mode: "3000x2000@60", scale: "1.5", descKey: "res3kDesc" },
 
     // 21:9 & 32:9 Monitores Ultrawide
     { label: "UW-FHD (21:9)", mode: "2560x1080@60", scale: "1", descKey: "resUwFhdDesc" },
@@ -148,7 +154,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(480))
+    contentWidth: panel.fittedContentWidth(Style.space(490))
     contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight)
 
     Column {

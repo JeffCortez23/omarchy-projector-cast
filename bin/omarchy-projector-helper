@@ -126,9 +126,13 @@ cmd_set_res() {
 
   # Auto escala inteligente para pantallas de alta densidad si no se especificó escala
   if [ "$scale" = "1" ] || [ -z "$scale" ]; then
-    if [[ "$mode" =~ 3840x2160 ]]; then
+    if [[ "$mode" =~ 3840x2160 ]] || [[ "$mode" =~ 5120x2880 ]]; then
       scale="2"
-    elif [[ "$mode" =~ 2560x1440 ]] || [[ "$mode" =~ 2560x1600 ]]; then
+    elif [[ "$mode" =~ 3200x2000 ]]; then
+      scale="1.6"
+    elif [[ "$mode" =~ 2880x1800 ]] || [[ "$mode" =~ 3000x2000 ]]; then
+      scale="1.5"
+    elif [[ "$mode" =~ 2560x1440 ]] || [[ "$mode" =~ 2560x1600 ]] || [[ "$mode" =~ 3440x1440 ]] || [[ "$mode" =~ 5120x1440 ]]; then
       scale="1.25"
     elif [[ "$mode" =~ 5120x1440 ]]; then
       scale="1.25"
