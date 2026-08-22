@@ -32,35 +32,46 @@ Panel {
   property string nativeScale: "1"
   property bool p2pSupported: true
   property string p2pInterface: "wlp1s0"
-  property var firewallState: ({ ufwActive: false, rtspAllowed: true, p2pAllowed: true, firewallOk: true })
+  property var firewallState: ({ ufwActive: false, firewallOk: true })
 
-  // Presets organizados por Relaciones de Aspecto y categorías (16:9, 16:10, 3:2, 21:9, 32:9, 4:3)
-  readonly property var resolutionPresets: [
-    // 16:9 Televisores y Monitores Estándar
-    { label: "1080p", mode: "1920x1080@60", scale: "1", descKey: "res1080pDesc" },
-    { label: "2K QHD", mode: "2560x1440@60", scale: "1.25", descKey: "res2kDesc" },
-    { label: "4K UHD (2x)", mode: "3840x2160@60", scale: "2", descKey: "res4kDesc" },
-    { label: "5K UHD (2x)", mode: "5120x2880@60", scale: "2", descKey: "res5kDesc" },
-    { label: "720p HD", mode: "1280x720@60", scale: "1", descKey: "res720pDesc" },
-
-    // 16:10 Proyectores Láser & Laptops OLED (Epson, WUXGA, Zenbook, ThinkPad)
-    { label: "WXGA (Epson)", mode: "1280x800@60", scale: "1", descKey: "resWxgaDesc" },
-    { label: "WUXGA (16:10)", mode: "1920x1200@60", scale: "1", descKey: "resWuxgaDesc" },
-    { label: "2.8K OLED", mode: "2880x1800@60", scale: "1.5", descKey: "res28kDesc" },
-    { label: "3.2K OLED", mode: "3200x2000@60", scale: "1.6", descKey: "res32kDesc" },
-    { label: "WQXGA (2K)", mode: "2560x1600@60", scale: "1.25", descKey: "resWqxgaDesc" },
-
-    // 3:2 Productividad (Surface / MateBook)
-    { label: "3K (3:2)", mode: "3000x2000@60", scale: "1.5", descKey: "res3kDesc" },
-
-    // 21:9 & 32:9 Monitores Ultrawide
-    { label: "UW-FHD (21:9)", mode: "2560x1080@60", scale: "1", descKey: "resUwFhdDesc" },
-    { label: "UW-QHD (21:9)", mode: "3440x1440@60", scale: "1.25", descKey: "resUwQhdDesc" },
-    { label: "Super UW (32:9)", mode: "5120x1440@60", scale: "1.25", descKey: "resSuperUwDesc" },
-
-    // 4:3 / 5:4 Clásicos
-    { label: "XGA (4:3)", mode: "1024x768@60", scale: "1", descKey: "resXgaDesc" },
-    { label: "SXGA (5:4)", mode: "1280x1024@60", scale: "1", descKey: "resSxgaDesc" }
+  // Categorías de Presets organizados por Relaciones de Aspecto en orden ascendente
+  readonly property var resolutionCategories: [
+    {
+      titleKey: "cat16x9",
+      presets: [
+        { label: "720p HD", mode: "1280x720@60", scale: "1", descKey: "res720pDesc" },
+        { label: "1080p", mode: "1920x1080@60", scale: "1", descKey: "res1080pDesc" },
+        { label: "2K QHD", mode: "2560x1440@60", scale: "1.25", descKey: "res2kDesc" },
+        { label: "4K UHD (2x)", mode: "3840x2160@60", scale: "2", descKey: "res4kDesc" },
+        { label: "5K UHD (2x)", mode: "5120x2880@60", scale: "2", descKey: "res5kDesc" }
+      ]
+    },
+    {
+      titleKey: "cat16x10",
+      presets: [
+        { label: "WXGA (Epson)", mode: "1280x800@60", scale: "1", descKey: "resWxgaDesc" },
+        { label: "WUXGA (16:10)", mode: "1920x1200@60", scale: "1", descKey: "resWuxgaDesc" },
+        { label: "WQXGA (2K)", mode: "2560x1600@60", scale: "1.25", descKey: "resWqxgaDesc" },
+        { label: "2.8K OLED", mode: "2880x1800@60", scale: "1.5", descKey: "res28kDesc" },
+        { label: "3.2K OLED", mode: "3200x2000@60", scale: "1.6", descKey: "res32kDesc" }
+      ]
+    },
+    {
+      titleKey: "catUltrawide",
+      presets: [
+        { label: "3K (3:2)", mode: "3000x2000@60", scale: "1.5", descKey: "res3kDesc" },
+        { label: "UW-FHD (21:9)", mode: "2560x1080@60", scale: "1", descKey: "resUwFhdDesc" },
+        { label: "UW-QHD (21:9)", mode: "3440x1440@60", scale: "1.25", descKey: "resUwQhdDesc" },
+        { label: "Super UW (32:9)", mode: "5120x1440@60", scale: "1.25", descKey: "resSuperUwDesc" }
+      ]
+    },
+    {
+      titleKey: "catClassic",
+      presets: [
+        { label: "XGA (4:3)", mode: "1024x768@60", scale: "1", descKey: "resXgaDesc" },
+        { label: "SXGA (5:4)", mode: "1280x1024@60", scale: "1", descKey: "resSxgaDesc" }
+      ]
+    }
   ]
 
   function refresh() {
@@ -154,7 +165,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(490))
+    contentWidth: panel.fittedContentWidth(Style.space(520))
     contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight)
 
     Column {
@@ -266,23 +277,137 @@ Panel {
         wrapMode: Text.WordWrap
       }
 
-      Flow {
+      // Categorías de Resoluciones
+      Column {
         width: parent.width
-        spacing: Style.space(6)
+        spacing: Style.space(10)
 
         Repeater {
-          model: root.resolutionPresets
-          Button {
+          model: root.resolutionCategories
+          Column {
             required property var modelData
-            text: modelData.label
-            tooltipText: root.t(modelData.descKey)
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              text: root.t(modelData.titleKey)
+              color: root.bar ? root.bar.foreground : Color.foreground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              opacity: 0.85
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: modelData.presets
+                Button {
+                  required property var modelData
+                  text: modelData.label
+                  tooltipText: root.t(modelData.descKey)
+                  bordered: true
+                  active: root.currentResolution.indexOf(modelData.mode.split("@")[0]) === 0
+                  foreground: (root.currentResolution.indexOf(modelData.mode.split("@")[0]) === 0) ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                  fontSize: Style.font.caption
+                  onClicked: {
+                    root.setResolution(modelData.mode, modelData.scale)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Input para Resolución Personalizada
+      Column {
+        width: parent.width
+        spacing: Style.space(4)
+
+        Text {
+          text: "⚙️ " + root.t("secCustomRes")
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          opacity: 0.85
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Rectangle {
+            height: Style.space(32)
+            width: parent.width - scaleBox.width - customBtn.width - Style.space(12)
+            radius: Style.radius(6)
+            color: Qt.rgba(1, 1, 1, 0.07)
+            border.color: customResInput.activeFocus ? Color.accent : Qt.rgba(1, 1, 1, 0.15)
+
+            TextInput {
+              id: customResInput
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(8)
+              anchors.rightMargin: Style.space(8)
+              verticalAlignment: TextInput.AlignVCenter
+              color: root.bar ? root.bar.foreground : Color.foreground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              clip: true
+
+              Text {
+                anchors.fill: parent
+                verticalAlignment: Text.AlignVCenter
+                text: root.t("customResPlaceholder")
+                color: Qt.rgba(1, 1, 1, 0.35)
+                font.family: parent.font.family
+                font.pixelSize: parent.font.pixelSize
+                visible: !parent.text && !parent.activeFocus
+              }
+            }
+          }
+
+          Rectangle {
+            id: scaleBox
+            height: Style.space(32)
+            width: Style.space(60)
+            radius: Style.radius(6)
+            color: Qt.rgba(1, 1, 1, 0.07)
+            border.color: customScaleInput.activeFocus ? Color.accent : Qt.rgba(1, 1, 1, 0.15)
+
+            TextInput {
+              id: customScaleInput
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(4)
+              anchors.rightMargin: Style.space(4)
+              verticalAlignment: TextInput.AlignVCenter
+              horizontalAlignment: TextInput.AlignHCenter
+              text: "1"
+              color: root.bar ? root.bar.foreground : Color.foreground
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              clip: true
+            }
+          }
+
+          Button {
+            id: customBtn
+            text: root.t("btnApplyCustom")
+            iconText: "󰄬"
             bordered: true
-            active: root.currentResolution.indexOf(modelData.mode.split("@")[0]) === 0
-            foreground: (root.currentResolution.indexOf(modelData.mode.split("@")[0]) === 0) ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+            foreground: Color.accent
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             fontSize: Style.font.caption
             onClicked: {
-              root.setResolution(modelData.mode, modelData.scale)
+              var modeVal = customResInput.text.trim()
+              if (modeVal) {
+                var scaleVal = customScaleInput.text.trim() || "1"
+                root.setResolution(modeVal, scaleVal)
+              }
             }
           }
         }
