@@ -12,17 +12,15 @@ check_firewall() {
   local ufw_active="false"
   local firewall_ok="true"
 
-  # Comprobación de estado no privilegiada mediante systemctl
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet ufw 2>/dev/null; then
-      ufw_active="true"
-      # Si UFW está activo, revisar si el puerto 7236/tcp está configurado en user.rules
-      if [ -f /etc/ufw/user.rules ] && grep -q "7236/tcp" /etc/ufw/user.rules 2>/dev/null; then
-        firewall_ok="true"
-      else
-        # Si no se puede leer o no está la regla, marcar como pendiente
-        firewall_ok="false"
-      fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+    ufw_active="true"
+    # Revisar si la regla para 7236 está en /etc/ufw/user.rules o mediante consulta no interactiva
+    if [ -r /etc/ufw/user.rules ] && grep -qE "7236" /etc/ufw/user.rules 2>/dev/null; then
+      firewall_ok="true"
+    elif sudo -n ufw status 2>/dev/null | grep -qE "7236"; then
+      firewall_ok="true"
+    else
+      firewall_ok="false"
     fi
   fi
 
