@@ -105,8 +105,19 @@ cmd_set_res() {
   local mode="${1:-1920x1080@60}"
   local scale="${2:-1}"
 
+  # Strict input validation: mode must only be WxH or WxH@R (digits, 'x', '@', '.')
+  if [[ ! "$mode" =~ ^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?$ ]]; then
+    echo "Error: Invalid resolution format '$mode'" >&2
+    return 1
+  fi
+
   if [[ ! "$mode" =~ @ ]]; then
     mode="${mode}@60"
+  fi
+
+  # Strict input validation: scale must be a positive decimal or integer
+  if [[ ! "$scale" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]]; then
+    scale="1"
   fi
 
   # Auto escala inteligente para pantallas de alta densidad si no se especificó escala
@@ -127,11 +138,13 @@ cmd_set_res() {
   local mon_name
   mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
 
-  # Intentar primero con la API Lua de Omarchy Hyprland
-  if ! hyprctl eval "hl.monitor({ output = \"$mon_name\", mode = \"$mode\", position = \"0x0\", scale = $scale, transform = 0 })" >/dev/null 2>&1; then
-    # Fallback a comando estándar de Hyprland
-    hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
+  # Strict validation: monitor name must only be alphanumeric, '-' and '_'
+  if [[ ! "$mon_name" =~ ^[a-zA-Z0-9_\-]+$ ]]; then
+    mon_name="eDP-1"
   fi
+
+  # Safe direct monitor reconfiguration via Hyprland IPC without Lua evaluation
+  hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
 
   echo "res_set:$mode:$scale"
 }

@@ -79,27 +79,38 @@ Panel {
   }
 
   function launchGND() {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper launch"]
+    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "launch"]
     if (!actionProc.running) actionProc.running = true
   }
 
   function stopGND() {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper stop"]
+    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "stop"]
     if (!actionProc.running) actionProc.running = true
   }
 
   function setResolution(mode, scale) {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper set-res " + mode + " " + (scale || "1")]
+    var cleanMode = String(mode || "").trim()
+    var cleanScale = String(scale || "1").trim()
+
+    // Strict client-side validation against injection
+    if (!/^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?$/.test(cleanMode)) {
+      return
+    }
+    if (!/^[0-9]+(\.[0-9]{1,2})?$/.test(cleanScale)) {
+      cleanScale = "1"
+    }
+
+    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "set-res", cleanMode, cleanScale]
     if (!actionProc.running) actionProc.running = true
   }
 
   function resetResolution() {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper reset-res"]
+    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "reset-res"]
     if (!actionProc.running) actionProc.running = true
   }
 
   function fixFirewall() {
-    actionProc.command = ["bash", "-c", root.scriptDir + "/omarchy-projector-helper copy-firewall-cmd"]
+    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "copy-firewall-cmd"]
     if (!actionProc.running) actionProc.running = true
   }
 
@@ -115,7 +126,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["bash", "-c", root.scriptDir + "/omarchy-projector-helper status"]
+    command: [root.scriptDir + "/omarchy-projector-helper", "status"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -358,6 +369,9 @@ Panel {
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               clip: true
+              validator: RegularExpressionValidator {
+                regularExpression: /^[0-9]{0,5}(x[0-9]{0,5}(@[0-9]{0,3}(\.[0-9]{0,2})?)?)?$/
+              }
 
               Text {
                 anchors.fill: parent
@@ -391,6 +405,9 @@ Panel {
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               clip: true
+              validator: RegularExpressionValidator {
+                regularExpression: /^[0-9]{0,2}(\.[0-9]{0,2})?$/
+              }
             }
           }
 
