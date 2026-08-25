@@ -143,8 +143,12 @@ cmd_set_res() {
     mon_name="eDP-1"
   fi
 
-  # Safe direct monitor reconfiguration via Hyprland IPC without Lua evaluation
-  hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
+  # Execute via Lua engine (required by Omarchy Hyprland with Lua configs)
+  # All variables ($mon_name, $mode, $scale) are guaranteed strictly sanitized by regex assertions above
+  if ! hyprctl eval "hl.monitor({ output = \"$mon_name\", mode = \"$mode\", position = \"0x0\", scale = $scale, transform = 0 })" >/dev/null 2>&1; then
+    # Fallback for legacy parsers
+    hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
+  fi
 
   echo "res_set:$mode:$scale"
 }

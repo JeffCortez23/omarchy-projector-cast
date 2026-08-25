@@ -12,7 +12,8 @@ Panel {
   ipcTarget: "io.github.jeffcortez23.omarchy-projector-cast"
   manageIpc: true
 
-  readonly property string scriptDir: Qt.resolvedUrl(".").toString().replace("file://", "") + "/bin"
+  readonly property string binDir: Qt.resolvedUrl("bin/").toString().replace(/^file:\/\//, "")
+  function bin(name) { return binDir + name }
 
   // Idioma (auto detectado del sistema o seleccionable)
   property string selectedLang: "auto"
@@ -78,14 +79,18 @@ Panel {
     if (!statusProc.running) statusProc.running = true
   }
 
+  function runAction(command) {
+    if (actionProc.running) return
+    actionProc.command = command
+    actionProc.running = true
+  }
+
   function launchGND() {
-    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "launch"]
-    if (!actionProc.running) actionProc.running = true
+    runAction([bin("omarchy-projector-helper"), "launch"])
   }
 
   function stopGND() {
-    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "stop"]
-    if (!actionProc.running) actionProc.running = true
+    runAction([bin("omarchy-projector-helper"), "stop"])
   }
 
   function setResolution(mode, scale) {
@@ -100,18 +105,15 @@ Panel {
       cleanScale = "1"
     }
 
-    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "set-res", cleanMode, cleanScale]
-    if (!actionProc.running) actionProc.running = true
+    runAction([bin("omarchy-projector-helper"), "set-res", cleanMode, cleanScale])
   }
 
   function resetResolution() {
-    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "reset-res"]
-    if (!actionProc.running) actionProc.running = true
+    runAction([bin("omarchy-projector-helper"), "reset-res"])
   }
 
   function fixFirewall() {
-    actionProc.command = [root.scriptDir + "/omarchy-projector-helper", "copy-firewall-cmd"]
-    if (!actionProc.running) actionProc.running = true
+    runAction([bin("omarchy-projector-helper"), "copy-firewall-cmd"])
   }
 
   Component.onCompleted: root.refresh()
@@ -126,7 +128,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: [root.scriptDir + "/omarchy-projector-helper", "status"]
+    command: [bin("omarchy-projector-helper"), "status"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -151,8 +153,13 @@ Panel {
 
   Process {
     id: actionProc
-    stdout: StdioCollector { waitForEnd: true }
-    onRunningChanged: if (!running) root.refresh()
+    onExited: settleTimer.restart()
+  }
+
+  Timer {
+    id: settleTimer
+    interval: 400
+    onTriggered: root.refresh()
   }
 
   implicitWidth: button.implicitWidth
