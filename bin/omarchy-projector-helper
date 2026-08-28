@@ -180,6 +180,13 @@ cmd_launch() {
     return 1
   fi
 
+  # Asegurar que el portal ScreenCast de Hyprland esté activo para captura de pantalla
+  if command -v systemctl >/dev/null 2>&1; then
+    if ! systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
+      systemctl --user start xdg-desktop-portal-hyprland 2>/dev/null || true
+    fi
+  fi
+
   # Coincidencia estricta por nombre exacto de proceso
   if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
     hyprctl dispatch focuswindow "class:gnome-network-displays" >/dev/null 2>&1 || true
