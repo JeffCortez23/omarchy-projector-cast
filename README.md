@@ -13,6 +13,10 @@
 ## ✨ Features
 
 * **📡 1-Click Screen Mirroring (Miracast):** Seamlessly launches and manages `gnome-network-displays` with automatic PipeWire video streaming over Wi-Fi Direct (P2P).
+* **🛡️ Presentation Mode (Anti-Sleep & DND):** 1-click toggle that inhibits desktop sleep/idle lock and silences desktop notifications during slide presentations.
+* **⚡ Smart Wi-Fi Band & Portal Diagnostics:** Real-time detection of 5 GHz vs 2.4 GHz bands with low-latency tips, ScreenCast portal readiness check, and non-privileged firewall verification.
+* **🖥️ Multi-Monitor Target Selection:** Easily select which connected display to resize or project when using multi-monitor setups.
+* **🖱️ Top Bar Quick Action:** Right-click on the bar icon to instantly stop casting or reset to native resolution without opening the popup.
 * **📐 Multi-Aspect Ratio & Resolution Presets:**
   * **16:9 Standard (TVs & Monitors):** `1080p FHD`, `2K QHD (1.25x)`, `4K UHD (2x HiDPI)`, `5K UHD (2x HiDPI)`, `720p HD Ready`.
   * **16:10 Classroom Projectors & High-Res Laptops:** `WXGA (Epson 1280x800)`, `WUXGA (1920x1200)`, `2.8K OLED (2880x1800 1.5x)`, `3.2K OLED (3200x2000 1.6x)`, `WQXGA (2560x1600 1.25x)`.
@@ -21,7 +25,6 @@
   * **4:3 / 5:4 Classic:** `XGA (1024x768)`, `SXGA (1280x1024)`.
 * **🔄 Hardware-Aware Native Auto-Detection:** Automatically detects any laptop or monitor's exact factory resolution and HiDPI scale (1080p, 2.8K, 3.2K, 4K, 5K, ultrawide) and provides a 1-click restore.
 * **🌐 Multilingual Support (i18n):** Auto-detects system locale or allows quick manual switching between **English (EN)**, **Español (ES)**, **Português (PT)**, **Français (FR)**, **Deutsch (DE)**, **中文 (ZH)**, **日本語 (JA)**, and **한국어 (KO)**.
-* **🛡️ Safe Diagnostics & Process Control:** Non-privileged firewall check (port 7236/tcp) with 1-click rule clipboard helper and exact-match process management.
 * **🪟 Hyprland Universal Compatibility:** Supports Omarchy's Lua runtime API with fallback to standard Hyprland keyword dispatching.
 
 ---

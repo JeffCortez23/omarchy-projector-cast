@@ -45,10 +45,15 @@ cmd_status() {
   fi
 
   local gnd_running="false"
-  # Coincidencia estricta por nombre exacto de proceso sin patrones difusos
   if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
     gnd_running="true"
   fi
+
+  # Lista de todos los monitores activos
+  local raw_monitors
+  raw_monitors=$(hyprctl monitors -j 2>/dev/null || echo "[]")
+  local monitors_list
+  monitors_list=$(echo "$raw_monitors" | jq -c '[.[] | {name: .name, width: .width, height: .height, scale: .scale, focused: .focused}]' 2>/dev/null || echo "[]")
 
   local mon_info
   mon_info=$(get_primary_monitor_info)
@@ -77,7 +82,6 @@ cmd_status() {
     native_res=$(jq -r '.resolution // "1920x1080@60"' "$native_file" 2>/dev/null || echo "$cur_res")
     native_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "$cur_scale")
   else
-    # Si no existe, guardar el modo de mayor resolución de availableModes o el actual
     local best_mode
     best_mode=$(echo "$mon_info" | jq -r '.availableModes[0] // empty' 2>/dev/null || true)
     if [ -n "$best_mode" ]; then
@@ -86,6 +90,7 @@ cmd_status() {
     printf '{"resolution":"%s","scale":"%s"}\n' "$native_res" "$native_scale" > "$native_file"
   fi
 
+  # Wi-Fi Direct / P2P
   local p2p_supported="false"
   local p2p_interface="wlp1s0"
   if command -v iw >/dev/null 2>&1 && iw dev 2>/dev/null | grep -qi "P2P-device"; then
@@ -94,16 +99,63 @@ cmd_status() {
     p2p_supported="true"
   fi
 
+  # Detección de banda Wi-Fi activa (5 GHz vs 2.4 GHz)
+  local wifi_band="Unknown"
+  if command -v nmcli >/dev/null 2>&1; then
+    local freq_nm
+    freq_nm=$(nmcli -t -f active,freq dev wifi 2>/dev/null | grep '^yes:' | cut -d: -f2 | grep -oE '[0-9]+' | head -n 1 || true)
+    if [ -n "$freq_nm" ]; then
+      if [ "$freq_nm" -gt 4000 ]; then
+        wifi_band="5GHz"
+      else
+        wifi_band="2.4GHz"
+      fi
+    fi
+  fi
+  if [ "$wifi_band" = "Unknown" ] && command -v iw >/dev/null 2>&1; then
+    local freq_iw
+    freq_iw=$(iw dev 2>/dev/null | grep -iE "channel" | grep -oE "\([0-9]+ MHz\)" | tr -dc '0-9' | head -n 1 || true)
+    if [ -n "$freq_iw" ]; then
+      if [ "$freq_iw" -gt 4000 ]; then
+        wifi_band="5GHz"
+      else
+        wifi_band="2.4GHz"
+      fi
+    fi
+  fi
+
+  # Estado del portal ScreenCast
+  local portal_ok="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
+      portal_ok="true"
+    fi
+  fi
+
+  # Estado del Modo Presentación (anti-suspensión)
+  local pres_mode="false"
+  local pres_pid_file="$STATE_DIR/presentation.pid"
+  if [ -f "$pres_pid_file" ]; then
+    local pid
+    pid=$(cat "$pres_pid_file" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      pres_mode="true"
+    else
+      rm -f "$pres_pid_file"
+    fi
+  fi
+
   local fw_json
   fw_json=$(check_firewall)
 
-  printf '{"gndInstalled":%s,"gndRunning":%s,"primaryMonitor":"%s","currentResolution":"%s","currentScale":"%s","nativeResolution":"%s","nativeScale":"%s","p2pSupported":%s,"p2pInterface":"%s","firewall":%s}\n' \
-    "$gnd_installed" "$gnd_running" "$primary_name" "$cur_res" "$cur_scale" "$native_res" "$native_scale" "$p2p_supported" "$p2p_interface" "$fw_json"
+  printf '{"gndInstalled":%s,"gndRunning":%s,"primaryMonitor":"%s","currentResolution":"%s","currentScale":"%s","nativeResolution":"%s","nativeScale":"%s","p2pSupported":%s,"p2pInterface":"%s","wifiBand":"%s","portalOk":%s,"presentationMode":%s,"monitors":%s,"firewall":%s}\n' \
+    "$gnd_installed" "$gnd_running" "$primary_name" "$cur_res" "$cur_scale" "$native_res" "$native_scale" "$p2p_supported" "$p2p_interface" "$wifi_band" "$portal_ok" "$pres_mode" "$monitors_list" "$fw_json"
 }
 
 cmd_set_res() {
   local mode="${1:-1920x1080@60}"
   local scale="${2:-1}"
+  local target_mon="${3:-}"
 
   # Strict input validation: mode must only be WxH or WxH@R (digits, 'x', '@', '.')
   if [[ ! "$mode" =~ ^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?$ ]]; then
@@ -133,10 +185,12 @@ cmd_set_res() {
     fi
   fi
 
-  local mon_info
-  mon_info=$(get_primary_monitor_info)
-  local mon_name
-  mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+  local mon_name="$target_mon"
+  if [ -z "$mon_name" ]; then
+    local mon_info
+    mon_info=$(get_primary_monitor_info)
+    mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+  fi
 
   # Strict validation: monitor name must only be alphanumeric, '-' and '_'
   if [[ ! "$mon_name" =~ ^[a-zA-Z0-9_\-]+$ ]]; then
@@ -144,20 +198,27 @@ cmd_set_res() {
   fi
 
   # Execute via Lua engine (required by Omarchy Hyprland with Lua configs)
-  # All variables ($mon_name, $mode, $scale) are guaranteed strictly sanitized by regex assertions above
   if ! hyprctl eval "hl.monitor({ output = \"$mon_name\", mode = \"$mode\", position = \"0x0\", scale = $scale, transform = 0 })" >/dev/null 2>&1; then
     # Fallback for legacy parsers
     hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
   fi
 
-  echo "res_set:$mode:$scale"
+  echo "res_set:$mode:$scale:$mon_name"
 }
 
 cmd_reset_res() {
-  local mon_info
-  mon_info=$(get_primary_monitor_info)
-  local mon_name
-  mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+  local target_mon="${1:-}"
+  local mon_name="$target_mon"
+  if [ -z "$mon_name" ]; then
+    local mon_info
+    mon_info=$(get_primary_monitor_info)
+    mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
+  fi
+
+  # Strict validation: monitor name must only be alphanumeric, '-' and '_'
+  if [[ ! "$mon_name" =~ ^[a-zA-Z0-9_\-]+$ ]]; then
+    mon_name="eDP-1"
+  fi
 
   local native_file="$STATE_DIR/native_${mon_name}.json"
   local target_res="1920x1080@60"
@@ -168,7 +229,47 @@ cmd_reset_res() {
     target_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "1")
   fi
 
-  cmd_set_res "$target_res" "$target_scale"
+  cmd_set_res "$target_res" "$target_scale" "$mon_name"
+}
+
+cmd_toggle_presentation_mode() {
+  local pres_pid_file="$STATE_DIR/presentation.pid"
+  if [ -f "$pres_pid_file" ] && kill -0 "$(cat "$pres_pid_file" 2>/dev/null)" 2>/dev/null; then
+    local pid
+    pid=$(cat "$pres_pid_file" 2>/dev/null)
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pres_pid_file"
+    # Restaurar notificaciones
+    if command -v makoctl >/dev/null 2>&1; then
+      makoctl mode -r do-not-disturb 2>/dev/null || true
+    fi
+    if command -v dunstctl >/dev/null 2>&1; then
+      dunstctl set-paused false 2>/dev/null || true
+    fi
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send -t 2000 "Projector & Cast" "Presentation Mode: Disabled (Notifications & Sleep Restored)"
+    fi
+    echo "presentation:disabled"
+  else
+    if command -v systemd-inhibit >/dev/null 2>&1; then
+      nohup systemd-inhibit --what=idle:sleep --who="Projector & Cast" --why="Presentation in progress" sleep infinity >/dev/null 2>&1 &
+      echo $! > "$pres_pid_file"
+    else
+      nohup sh -c 'while true; do sleep 30; done' >/dev/null 2>&1 &
+      echo $! > "$pres_pid_file"
+    fi
+    # Silenciar notificaciones (DND)
+    if command -v makoctl >/dev/null 2>&1; then
+      makoctl mode -a do-not-disturb 2>/dev/null || true
+    fi
+    if command -v dunstctl >/dev/null 2>&1; then
+      dunstctl set-paused true 2>/dev/null || true
+    fi
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send -t 2500 "Projector & Cast" "Presentation Mode: Active (Sleep Inhibited & Notifications Muted)"
+    fi
+    echo "presentation:enabled"
+  fi
 }
 
 cmd_launch() {
@@ -230,7 +331,11 @@ case "${1:-}" in
     cmd_set_res "$@"
     ;;
   reset-res)
-    cmd_reset_res
+    shift
+    cmd_reset_res "$@"
+    ;;
+  toggle-presentation-mode)
+    cmd_toggle_presentation_mode
     ;;
   launch)
     cmd_launch
@@ -242,7 +347,7 @@ case "${1:-}" in
     cmd_copy_firewall_cmd
     ;;
   *)
-    echo "Usage: $0 {status|set-res <mode> [scale]|reset-res|launch|stop|copy-firewall-cmd}"
+    echo "Usage: $0 {status|set-res <mode> [scale] [mon]|reset-res [mon]|toggle-presentation-mode|launch|stop|copy-firewall-cmd}"
     exit 1
     ;;
 esac

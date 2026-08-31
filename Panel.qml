@@ -33,6 +33,11 @@ Panel {
   property string nativeScale: "1"
   property bool p2pSupported: true
   property string p2pInterface: "wlp1s0"
+  property string wifiBand: "Unknown"
+  property bool portalOk: true
+  property bool presentationMode: false
+  property var monitors: []
+  property string selectedMonitor: ""
   property var firewallState: ({ ufwActive: false, firewallOk: true })
 
   // Categorías de Presets organizados por Relaciones de Aspecto en orden ascendente
@@ -93,9 +98,14 @@ Panel {
     runAction([bin("omarchy-projector-helper"), "stop"])
   }
 
+  function togglePresentationMode() {
+    runAction([bin("omarchy-projector-helper"), "toggle-presentation-mode"])
+  }
+
   function setResolution(mode, scale) {
     var cleanMode = String(mode || "").trim()
     var cleanScale = String(scale || "1").trim()
+    var cleanMon = String(root.selectedMonitor || root.primaryMonitor || "").trim()
 
     // Strict client-side validation against injection
     if (!/^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?$/.test(cleanMode)) {
@@ -105,11 +115,20 @@ Panel {
       cleanScale = "1"
     }
 
-    runAction([bin("omarchy-projector-helper"), "set-res", cleanMode, cleanScale])
+    if (cleanMon) {
+      runAction([bin("omarchy-projector-helper"), "set-res", cleanMode, cleanScale, cleanMon])
+    } else {
+      runAction([bin("omarchy-projector-helper"), "set-res", cleanMode, cleanScale])
+    }
   }
 
   function resetResolution() {
-    runAction([bin("omarchy-projector-helper"), "reset-res"])
+    var cleanMon = String(root.selectedMonitor || root.primaryMonitor || "").trim()
+    if (cleanMon) {
+      runAction([bin("omarchy-projector-helper"), "reset-res", cleanMon])
+    } else {
+      runAction([bin("omarchy-projector-helper"), "reset-res"])
+    }
   }
 
   function fixFirewall() {
@@ -143,6 +162,10 @@ Panel {
           root.nativeScale = res.nativeScale ? String(res.nativeScale) : "1"
           root.p2pSupported = res.p2pSupported !== undefined ? !!res.p2pSupported : true
           root.p2pInterface = res.p2pInterface || "wlp1s0"
+          root.wifiBand = res.wifiBand || "Unknown"
+          root.portalOk = res.portalOk !== undefined ? !!res.portalOk : true
+          root.presentationMode = !!res.presentationMode
+          root.monitors = Array.isArray(res.monitors) ? res.monitors : []
           if (res.firewall) root.firewallState = res.firewall
         } catch (e) {
           // Ignorar errores transitorios
@@ -170,10 +193,20 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.gndRunning ? "󰐻" : "󰡁"
-    foreground: root.gndRunning ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
-    tooltipText: root.gndRunning ? root.t("tooltipCasting") : root.t("tooltipIdle")
-    onPressed: function(b) { root.toggle() }
+    text: root.gndRunning ? "󰐻" : (root.presentationMode ? "🛡️" : "󰡁")
+    foreground: root.gndRunning ? Color.accent : (root.presentationMode ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground))
+    tooltipText: root.gndRunning ? root.t("tooltipCasting") : (root.presentationMode ? root.t("presentationMode") + " (" + root.t("active") + ")" : root.t("tooltipIdle"))
+    onPressed: function(b) {
+      if (b === Qt.RightButton) {
+        if (root.gndRunning) {
+          root.stopGND()
+        } else {
+          root.resetResolution()
+        }
+      } else {
+        root.toggle()
+      }
+    }
   }
 
   // Panel desplegable
@@ -202,8 +235,8 @@ Panel {
         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
         iconComponent: Component {
           Text {
-            text: root.gndRunning ? "󰐻" : "󰡁"
-            color: root.gndRunning ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+            text: root.gndRunning ? "󰐻" : (root.presentationMode ? "🛡️" : "󰡁")
+            color: root.gndRunning ? Color.accent : (root.presentationMode ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground))
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.display
           }
@@ -224,6 +257,19 @@ Panel {
             }
           }
         }
+      }
+
+      // Botón rápido de Modo Presentación (Anti-suspensión & No Molestar)
+      Button {
+        width: parent.width
+        text: (root.presentationMode ? "🛡️ " : "☕ ") + root.t("presentationMode") + (root.presentationMode ? " (" + root.t("active") + ")" : "")
+        tooltipText: root.t("presentationDesc")
+        bordered: true
+        active: root.presentationMode
+        foreground: root.presentationMode ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+        fontSize: Style.font.caption
+        onClicked: root.togglePresentationMode()
       }
 
       // Aviso si falta instalar GNOME Network Displays
@@ -284,6 +330,36 @@ Panel {
         text: root.t("secResolution")
         foreground: root.bar ? root.bar.foreground : Color.foreground
         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+      }
+
+      // Selector de Monitor de Destino (si hay múltiples pantallas conectadas)
+      Row {
+        visible: root.monitors.length > 1
+        width: parent.width
+        spacing: Style.space(6)
+
+        Text {
+          text: root.t("targetMonitor") + ":"
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Repeater {
+          model: root.monitors
+          Button {
+            required property var modelData
+            text: modelData.name + (modelData.focused ? " ★" : "")
+            bordered: true
+            active: (root.selectedMonitor || root.primaryMonitor) === modelData.name
+            foreground: ((root.selectedMonitor || root.primaryMonitor) === modelData.name) ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+            fontSize: Style.font.caption
+            onClicked: root.selectedMonitor = modelData.name
+          }
+        }
       }
 
       Text {
@@ -473,6 +549,7 @@ Panel {
         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
       }
 
+      // Wi-Fi Direct (P2P)
       Row {
         spacing: Style.space(8)
         Text {
@@ -490,6 +567,43 @@ Panel {
         }
       }
 
+      // Banda Wi-Fi
+      Row {
+        spacing: Style.space(8)
+        Text {
+          text: "• " + root.t("wifiBandLabel") + ":"
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          text: root.wifiBand === "5GHz" ? root.t("wifi5g") + " ✓" : (root.wifiBand === "2.4GHz" ? root.t("wifi24g") : root.wifiBand)
+          color: root.wifiBand === "5GHz" ? Color.accent : (root.wifiBand === "2.4GHz" ? (Color.urgent || Color.accent) : (root.bar ? root.bar.foreground : Color.foreground))
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+
+      // Portal ScreenCast
+      Row {
+        spacing: Style.space(8)
+        Text {
+          text: "• " + root.t("portalLabel") + ":"
+          color: root.bar ? root.bar.foreground : Color.foreground
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          text: root.portalOk ? root.t("active") + " ✓" : root.t("notDetected") + " ✗"
+          color: root.portalOk ? Color.accent : Color.urgent
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+
+      // Firewall
       Row {
         spacing: Style.space(8)
         Text {
