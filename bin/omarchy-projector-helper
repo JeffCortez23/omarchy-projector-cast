@@ -129,6 +129,11 @@ cmd_status() {
   if command -v systemctl >/dev/null 2>&1; then
     if systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
       portal_ok="true"
+    elif [ -x /usr/lib/xdg-desktop-portal-hyprland ] || [ -f /usr/lib/systemd/user/xdg-desktop-portal-hyprland.service ]; then
+      systemctl --user start xdg-desktop-portal-hyprland 2>/dev/null || true
+      if systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
+        portal_ok="true"
+      fi
     fi
   fi
 
