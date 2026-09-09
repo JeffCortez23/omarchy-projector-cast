@@ -317,7 +317,7 @@ cmd_stop() {
 }
 
 cmd_copy_firewall_cmd() {
-  local cmd="sudo ufw allow 7236/tcp comment 'Miracast-RTSP'"
+  local cmd="sudo ufw allow 7236/tcp comment 'Miracast-RTSP' && sudo ufw allow 7236:7250/udp comment 'Miracast-RTP'"
   if command -v wl-copy >/dev/null 2>&1; then
     printf "%s" "$cmd" | wl-copy
   fi

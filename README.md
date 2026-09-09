@@ -44,9 +44,10 @@
    *(Or in standard `hyprland.conf`: `windowrule = float, class:.*[nN]etwork[dD]isplays.*`)*
 
 3. **Firewall (UFW - Optional):**
-   If UFW is active on your machine, allow the RTSP streaming port (7236/tcp):
+   If UFW is active on your machine, allow the RTSP control port (7236/tcp) and the RTP media stream ports (7236-7250/udp):
    ```bash
    sudo ufw allow 7236/tcp comment 'Miracast-RTSP'
+   sudo ufw allow 7236:7250/udp comment 'Miracast-RTP'
    ```
    *(The plugin includes a 1-click clipboard button in the UI if UFW is detected active).*
 
