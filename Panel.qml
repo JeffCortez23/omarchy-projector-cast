@@ -193,7 +193,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.gndRunning ? "󰐻" : (root.presentationMode ? "🛡️" : "󰡁")
+    text: root.gndRunning ? "󰄙" : (root.presentationMode ? "🛡️" : "󰄘")
     foreground: root.gndRunning ? Color.accent : (root.presentationMode ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground))
     tooltipText: root.gndRunning ? root.t("tooltipCasting") : (root.presentationMode ? root.t("presentationMode") + " (" + root.t("active") + ")" : root.t("tooltipIdle"))
     onPressed: function(b) {
@@ -235,7 +235,7 @@ Panel {
         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
         iconComponent: Component {
           Text {
-            text: root.gndRunning ? "󰐻" : (root.presentationMode ? "🛡️" : "󰡁")
+            text: root.gndRunning ? "󰄙" : (root.presentationMode ? "🛡️" : "󰄘")
             color: root.gndRunning ? Color.accent : (root.presentationMode ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground))
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.display
@@ -244,7 +244,7 @@ Panel {
         trailingControl: Component {
           Button {
             text: root.gndRunning ? root.t("btnStop") : root.t("btnMirror")
-            iconText: root.gndRunning ? "󰓛" : "󰐻"
+            iconText: root.gndRunning ? "󰓛" : "󰄘"
             bordered: true
             foreground: root.gndRunning ? Color.urgent : (root.bar ? root.bar.foreground : Color.foreground)
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
