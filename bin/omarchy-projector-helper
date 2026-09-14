@@ -1,358 +1,691 @@
-#!/usr/bin/env bash
-# Helper backend para Proyector & Duplicación de Pantalla (Epson / Miracast / Smart TVs)
-# Soporta auto-detección de monitor nativo, múltiples aspect ratios (16:9, 16:10, 21:9, 32:9, 4:3),
-# diagnóstico no privilegiado y control seguro de procesos.
+#!/usr/bin/env python3
+"""
+Secure helper backend for Projector & Cast (Epson / Miracast / Smart TVs).
+Uses private no-follow directory descriptors and binds PID control to verified process identity.
+"""
 
-set -eo pipefail
+import contextlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+from typing import Any, Dict, List, Optional, Tuple
 
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-projector"
-mkdir -p "$STATE_DIR"
+LIMIT = 131072
 
-check_firewall() {
-  local ufw_active="false"
-  local firewall_ok="true"
 
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-    ufw_active="true"
-    # Revisar si la regla para 7236 está en /etc/ufw/user.rules o mediante consulta no interactiva
-    if [ -r /etc/ufw/user.rules ] && grep -qE "7236" /etc/ufw/user.rules 2>/dev/null; then
-      firewall_ok="true"
-    elif sudo -n ufw status 2>/dev/null | grep -qE "7236"; then
-      firewall_ok="true"
-    else
-      firewall_ok="false"
-    fi
-  fi
+class PrivateDirectory:
+    """Manages private state directory descriptor using O_NOFOLLOW and strict permissions."""
 
-  printf '{"ufwActive":%s,"firewallOk":%s}' "$ufw_active" "$firewall_ok"
-}
+    def __init__(self, path: Path):
+        path = Path(path).resolve()
+        if not path.is_absolute() or ".." in path.parts or len(path.parts) < 3:
+            raise ValueError("unsafe state directory path")
 
-get_primary_monitor_info() {
-  local monitors_json
-  monitors_json=$(hyprctl monitors -j 2>/dev/null || echo "[]")
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for i, part in enumerate(path.parts[1:], 1):
+                try:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                except FileNotFoundError:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                except OSError as err:
+                    # If leaf component was replaced with a symlink, safely remove and create genuine dir
+                    if i == len(path.parts) - 1:
+                        with contextlib.suppress(FileNotFoundError):
+                            os.unlink(part, dir_fd=fd)
+                        os.mkdir(part, 0o700, dir_fd=fd)
+                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    else:
+                        raise ValueError(f"unsafe state ancestor {part}: {err}") from err
 
-  # Preferir monitor con foco o el primero disponible
-  local mon_info
-  mon_info=$(echo "$monitors_json" | jq -c '(.[] | select(.focused == true)) // .[0] // {}' 2>/dev/null || echo "{}")
+                os.close(fd)
+                fd = child
+                info = os.fstat(fd)
+                sticky_root = bool(info.st_mode & stat.S_ISVTX)
+                if (info.st_uid not in (0, os.getuid()) and not sticky_root) or (
+                    info.st_mode & 0o022 and not sticky_root
+                ):
+                    raise ValueError(f"unsafe state ancestor: {part}")
 
-  echo "$mon_info"
-}
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or (info.st_mode & 0o022):
+                raise ValueError("state directory must be privately owned")
 
-cmd_status() {
-  local gnd_installed="false"
-  if command -v gnome-network-displays >/dev/null 2>&1; then
-    gnd_installed="true"
-  fi
+            os.fchmod(fd, 0o700)
+            self.fd = fd
+            self.path = path
+        except BaseException:
+            os.close(fd)
+            raise
 
-  local gnd_running="false"
-  if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
-    gnd_running="true"
-  fi
+    def close(self):
+        if getattr(self, "fd", None) is not None:
+            os.close(self.fd)
+            self.fd = None
 
-  # Lista de todos los monitores activos
-  local raw_monitors
-  raw_monitors=$(hyprctl monitors -j 2>/dev/null || echo "[]")
-  local monitors_list
-  monitors_list=$(echo "$raw_monitors" | jq -c '[.[] | {name: .name, width: .width, height: .height, scale: .scale, focused: .focused}]' 2>/dev/null || echo "[]")
+    def _validate_name(self, name: str):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name):
+            raise ValueError(f"invalid state file name: {name}")
 
-  local mon_info
-  mon_info=$(get_primary_monitor_info)
+    def write(self, name: str, data: bytes):
+        self._validate_name(name)
+        if len(data) > LIMIT:
+            raise ValueError("state exceeds size limit")
+        temp_name = f".tmp-{secrets.token_hex(16)}"
+        temp_fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=self.fd,
+        )
+        try:
+            with os.fdopen(temp_fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_name, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp_name, dir_fd=self.fd)
 
-  local primary_name="eDP-1"
-  local cur_res="1920x1080@60"
-  local cur_scale="1"
+    def read(self, name: str) -> Optional[bytes]:
+        self._validate_name(name)
+        try:
+            file_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=self.fd,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError:
+            # Refuse symlinks or invalid descriptors safely
+            self.unlink(name)
+            return None
 
-  if [ -n "$mon_info" ] && [ "$mon_info" != "{}" ]; then
-    primary_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"')
-    local w h r s
-    w=$(echo "$mon_info" | jq -r '.width // 1920')
-    h=$(echo "$mon_info" | jq -r '.height // 1080')
-    r=$(echo "$mon_info" | jq -r '.refreshRate // 60' | cut -d. -f1)
-    s=$(echo "$mon_info" | jq -r '.scale // 1')
-    cur_res="${w}x${h}@${r}"
-    cur_scale="$s"
-  fi
+        try:
+            with os.fdopen(file_fd, "rb") as f:
+                info = os.fstat(f.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()
+                    or info.st_nlink != 1
+                ):
+                    raise ValueError("unsafe state file descriptor")
+                if info.st_mode & 0o022:
+                    raise ValueError("state file has unsafe permissions")
+                data = f.read(LIMIT + 1)
+            if len(data) > LIMIT:
+                raise ValueError("state file exceeds size limit")
+            return data
+        except Exception:
+            self.unlink(name)
+            return None
 
-  # Guardar o leer resolución nativa de fábrica de este monitor
-  local native_file="$STATE_DIR/native_${primary_name}.json"
-  local native_res="$cur_res"
-  local native_scale="$cur_scale"
+    def unlink(self, name: str):
+        self._validate_name(name)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(name, dir_fd=self.fd)
 
-  if [ -f "$native_file" ]; then
-    native_res=$(jq -r '.resolution // "1920x1080@60"' "$native_file" 2>/dev/null || echo "$cur_res")
-    native_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "$cur_scale")
-  else
-    local best_mode
-    best_mode=$(echo "$mon_info" | jq -r '.availableModes[0] // empty' 2>/dev/null || true)
-    if [ -n "$best_mode" ]; then
-      native_res=$(echo "$best_mode" | sed -E "s/@([0-9]+)(\\.[0-9]+)?Hz/@\1/" | sed "s/Hz//")
-    fi
-    printf '{"resolution":"%s","scale":"%s"}\n' "$native_res" "$native_scale" > "$native_file"
-  fi
 
-  # Wi-Fi Direct / P2P
-  local p2p_supported="false"
-  local p2p_interface="wlp1s0"
-  if command -v iw >/dev/null 2>&1 && iw dev 2>/dev/null | grep -qi "P2P-device"; then
-    p2p_supported="true"
-  elif ip link show 2>/dev/null | grep -qiE "p2p-|wlan|wlp"; then
-    p2p_supported="true"
-  fi
+def get_state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(base) / "omarchy-projector"
 
-  # Detección de banda Wi-Fi activa (5 GHz vs 2.4 GHz)
-  local wifi_band="Unknown"
-  if command -v nmcli >/dev/null 2>&1; then
-    local freq_nm
-    freq_nm=$(nmcli -t -f active,freq dev wifi 2>/dev/null | grep '^yes:' | cut -d: -f2 | grep -oE '[0-9]+' | head -n 1 || true)
-    if [ -n "$freq_nm" ]; then
-      if [ "$freq_nm" -gt 4000 ]; then
-        wifi_band="5GHz"
-      else
-        wifi_band="2.4GHz"
-      fi
-    fi
-  fi
-  if [ "$wifi_band" = "Unknown" ] && command -v iw >/dev/null 2>&1; then
-    local freq_iw
-    freq_iw=$(iw dev 2>/dev/null | grep -iE "channel" | grep -oE "\([0-9]+ MHz\)" | tr -dc '0-9' | head -n 1 || true)
-    if [ -n "$freq_iw" ]; then
-      if [ "$freq_iw" -gt 4000 ]; then
-        wifi_band="5GHz"
-      else
-        wifi_band="2.4GHz"
-      fi
-    fi
-  fi
 
-  # Estado del portal ScreenCast
-  local portal_ok="false"
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
-      portal_ok="true"
-    elif [ -x /usr/lib/xdg-desktop-portal-hyprland ] || [ -f /usr/lib/systemd/user/xdg-desktop-portal-hyprland.service ]; then
-      systemctl --user start xdg-desktop-portal-hyprland 2>/dev/null || true
-      if systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
-        portal_ok="true"
-      fi
-    fi
-  fi
+def verify_presentation_identity(pid: int) -> bool:
+    """Verifies that the process with given PID belongs to user and is our presentation inhibitor."""
+    if pid <= 1:
+        return False
 
-  # Estado del Modo Presentación (anti-suspensión)
-  local pres_mode="false"
-  local pres_pid_file="$STATE_DIR/presentation.pid"
-  if [ -f "$pres_pid_file" ]; then
-    local pid
-    pid=$(cat "$pres_pid_file" 2>/dev/null || true)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      pres_mode="true"
-    else
-      rm -f "$pres_pid_file"
-    fi
-  fi
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
 
-  local fw_json
-  fw_json=$(check_firewall)
+    try:
+        proc_stat = os.stat(f"/proc/{pid}", follow_symlinks=False)
+        if proc_stat.st_uid != os.getuid():
+            return False
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
 
-  printf '{"gndInstalled":%s,"gndRunning":%s,"primaryMonitor":"%s","currentResolution":"%s","currentScale":"%s","nativeResolution":"%s","nativeScale":"%s","p2pSupported":%s,"p2pInterface":"%s","wifiBand":"%s","portalOk":%s,"presentationMode":%s,"monitors":%s,"firewall":%s}\n' \
-    "$gnd_installed" "$gnd_running" "$primary_name" "$cur_res" "$cur_scale" "$native_res" "$native_scale" "$p2p_supported" "$p2p_interface" "$wifi_band" "$portal_ok" "$pres_mode" "$monitors_list" "$fw_json"
-}
+    try:
+        cmd_fd = os.open(f"/proc/{pid}/cmdline", os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            with os.fdopen(cmd_fd, "rb") as f:
+                cmdline_bytes = f.read(4096)
+        except Exception:
+            return False
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
 
-cmd_set_res() {
-  local mode="${1:-1920x1080@60}"
-  local scale="${2:-1}"
-  local target_mon="${3:-}"
+    args = [arg.decode("utf-8", errors="replace") for arg in cmdline_bytes.split(b"\0") if arg]
 
-  # Strict input validation: mode must only be WxH or WxH@R (digits, 'x', '@', '.')
-  if [[ ! "$mode" =~ ^[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?$ ]]; then
-    echo "Error: Invalid resolution format '$mode'" >&2
-    return 1
-  fi
+    # Pattern 1: systemd-inhibit with who=omarchy-projector-cast
+    if any("systemd-inhibit" in arg for arg in args[:2]):
+        if any("omarchy-projector-cast" in arg for arg in args):
+            return True
 
-  if [[ ! "$mode" =~ @ ]]; then
-    mode="${mode}@60"
-  fi
+    # Pattern 2: standalone sleep tagged as omarchy-projector-presentation
+    if args and args[0] == "omarchy-projector-presentation":
+        return True
 
-  # Strict input validation: scale must be a positive decimal or integer
-  if [[ ! "$scale" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]]; then
-    scale="1"
-  fi
+    return False
 
-  # Auto escala inteligente para pantallas de alta densidad si no se especificó escala
-  if [ "$scale" = "1" ] || [ -z "$scale" ]; then
-    if [[ "$mode" =~ 3840x2160 ]] || [[ "$mode" =~ 5120x2880 ]]; then
-      scale="2"
-    elif [[ "$mode" =~ 3200x2000 ]]; then
-      scale="1.6"
-    elif [[ "$mode" =~ 2880x1800 ]] || [[ "$mode" =~ 3000x2000 ]]; then
-      scale="1.5"
-    elif [[ "$mode" =~ 2560x1440 ]] || [[ "$mode" =~ 2560x1600 ]] || [[ "$mode" =~ 3440x1440 ]] || [[ "$mode" =~ 5120x1440 ]]; then
-      scale="1.25"
-    fi
-  fi
 
-  local mon_name="$target_mon"
-  if [ -z "$mon_name" ]; then
-    local mon_info
-    mon_info=$(get_primary_monitor_info)
-    mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
-  fi
+def get_verified_presentation_pid(store: PrivateDirectory) -> Optional[int]:
+    """Reads presentation.pid and verifies process identity before returning PID."""
+    data = store.read("presentation.pid")
+    if not data:
+        return None
 
-  # Strict validation: monitor name must only be alphanumeric, '-' and '_'
-  if [[ ! "$mon_name" =~ ^[a-zA-Z0-9_\-]+$ ]]; then
-    mon_name="eDP-1"
-  fi
+    raw = data.decode("utf-8", errors="ignore").strip()
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", raw):
+        store.unlink("presentation.pid")
+        return None
 
-  # Execute via Lua engine (required by Omarchy Hyprland with Lua configs)
-  if ! hyprctl eval "hl.monitor({ output = \"$mon_name\", mode = \"$mode\", position = \"0x0\", scale = $scale, transform = 0 })" >/dev/null 2>&1; then
-    # Fallback for legacy parsers
-    hyprctl keyword monitor "$mon_name,$mode,auto,$scale" >/dev/null 2>&1 || true
-  fi
+    pid = int(raw)
+    if not verify_presentation_identity(pid):
+        # Reject planted or unrelated PID without signaling
+        store.unlink("presentation.pid")
+        return None
 
-  echo "res_set:$mode:$scale:$mon_name"
-}
+    return pid
 
-cmd_reset_res() {
-  local target_mon="${1:-}"
-  local mon_name="$target_mon"
-  if [ -z "$mon_name" ]; then
-    local mon_info
-    mon_info=$(get_primary_monitor_info)
-    mon_name=$(echo "$mon_info" | jq -r '.name // "eDP-1"' 2>/dev/null || echo "eDP-1")
-  fi
 
-  # Strict validation: monitor name must only be alphanumeric, '-' and '_'
-  if [[ ! "$mon_name" =~ ^[a-zA-Z0-9_\-]+$ ]]; then
-    mon_name="eDP-1"
-  fi
+def check_firewall() -> Dict[str, bool]:
+    ufw_active = False
+    firewall_ok = True
 
-  local native_file="$STATE_DIR/native_${mon_name}.json"
-  local target_res="1920x1080@60"
-  local target_scale="1"
+    try:
+        out = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "ufw"],
+            capture_output=True,
+            timeout=2,
+        )
+        if out.returncode == 0:
+            ufw_active = True
+            firewall_ok = False
+            user_rules = Path("/etc/ufw/user.rules")
+            if user_rules.is_file():
+                try:
+                    content = user_rules.read_text(encoding="utf-8", errors="ignore")
+                    if "7236" in content:
+                        firewall_ok = True
+                except Exception:
+                    pass
+            if not firewall_ok:
+                try:
+                    sout = subprocess.run(
+                        ["sudo", "-n", "ufw", "status"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    if sout.returncode == 0 and "7236" in sout.stdout:
+                        firewall_ok = True
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-  if [ -f "$native_file" ]; then
-    target_res=$(jq -r '.resolution // "1920x1080@60"' "$native_file" 2>/dev/null || echo "1920x1080@60")
-    target_scale=$(jq -r '.scale // "1"' "$native_file" 2>/dev/null || echo "1")
-  fi
+    return {"ufwActive": ufw_active, "firewallOk": firewall_ok}
 
-  cmd_set_res "$target_res" "$target_scale" "$mon_name"
-}
 
-cmd_toggle_presentation_mode() {
-  local pres_pid_file="$STATE_DIR/presentation.pid"
-  if [ -f "$pres_pid_file" ] && kill -0 "$(cat "$pres_pid_file" 2>/dev/null)" 2>/dev/null; then
-    local pid
-    pid=$(cat "$pres_pid_file" 2>/dev/null)
-    kill "$pid" 2>/dev/null || true
-    rm -f "$pres_pid_file"
-    # Restaurar notificaciones
-    if command -v makoctl >/dev/null 2>&1; then
-      makoctl mode -r do-not-disturb 2>/dev/null || true
-    fi
-    if command -v dunstctl >/dev/null 2>&1; then
-      dunstctl set-paused false 2>/dev/null || true
-    fi
-    if command -v notify-send >/dev/null 2>&1; then
-      notify-send -t 2000 "Projector & Cast" "Presentation Mode: Disabled (Notifications & Sleep Restored)"
-    fi
-    echo "presentation:disabled"
-  else
-    if command -v systemd-inhibit >/dev/null 2>&1; then
-      nohup systemd-inhibit --what=idle:sleep --who="Projector & Cast" --why="Presentation in progress" sleep infinity >/dev/null 2>&1 &
-      echo $! > "$pres_pid_file"
-    else
-      nohup sh -c 'while true; do sleep 30; done' >/dev/null 2>&1 &
-      echo $! > "$pres_pid_file"
-    fi
-    # Silenciar notificaciones (DND)
-    if command -v makoctl >/dev/null 2>&1; then
-      makoctl mode -a do-not-disturb 2>/dev/null || true
-    fi
-    if command -v dunstctl >/dev/null 2>&1; then
-      dunstctl set-paused true 2>/dev/null || true
-    fi
-    if command -v notify-send >/dev/null 2>&1; then
-      notify-send -t 2500 "Projector & Cast" "Presentation Mode: Active (Sleep Inhibited & Notifications Muted)"
-    fi
-    echo "presentation:enabled"
-  fi
-}
+def get_hyprland_monitors() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    monitors_list = []
+    primary = {}
+    try:
+        out = subprocess.run(
+            ["hyprctl", "monitors", "-j"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if out.returncode == 0:
+            data = json.loads(out.stdout)
+            if isinstance(data, list):
+                for mon in data:
+                    monitors_list.append({
+                        "name": mon.get("name", ""),
+                        "width": mon.get("width", 1920),
+                        "height": mon.get("height", 1080),
+                        "scale": mon.get("scale", 1),
+                        "focused": mon.get("focused", False),
+                    })
+                    if mon.get("focused"):
+                        primary = mon
+                if not primary and data:
+                    primary = data[0]
+    except Exception:
+        pass
 
-cmd_launch() {
-  if ! command -v gnome-network-displays >/dev/null 2>&1; then
-    if command -v notify-send >/dev/null 2>&1; then
-      notify-send -u critical "Projector & Cast" "GNOME Network Displays is not installed."
-    fi
-    echo "not_installed"
-    return 1
-  fi
+    return monitors_list, primary
 
-  # Asegurar que el portal ScreenCast de Hyprland esté activo para captura de pantalla
-  if command -v systemctl >/dev/null 2>&1; then
-    if ! systemctl --user is-active --quiet xdg-desktop-portal-hyprland 2>/dev/null; then
-      systemctl --user start xdg-desktop-portal-hyprland 2>/dev/null || true
-    fi
-  fi
 
-  # Coincidencia estricta por nombre exacto de proceso
-  if pgrep -x "gnome-network-displays" >/dev/null 2>&1 || pgrep -x "gnome-network-d" >/dev/null 2>&1; then
-    hyprctl dispatch focuswindow "class:gnome-network-displays" >/dev/null 2>&1 || true
-  else
-    nohup gnome-network-displays >/dev/null 2>&1 &
-  fi
-  echo "launched"
-}
+def cmd_status(store: PrivateDirectory):
+    gnd_installed = shutil.which("gnome-network-displays") is not None
+    gnd_running = False
 
-cmd_stop() {
-  # Terminar únicamente el binario exacto de gnome-network-displays de manera segura
-  local stopped="false"
-  if pgrep -x "gnome-network-displays" >/dev/null 2>&1; then
-    pkill -x "gnome-network-displays" 2>/dev/null || true
-    stopped="true"
-  fi
-  if pgrep -x "gnome-network-d" >/dev/null 2>&1; then
-    pkill -x "gnome-network-d" 2>/dev/null || true
-    stopped="true"
-  fi
-  echo "stopped"
-}
+    # Check running GNOME Network Displays with verified cmdline and ownership
+    try:
+        out = subprocess.run(["pgrep", "-x", "gnome-network-displays"], capture_output=True, text=True)
+        if out.returncode == 0:
+            for line in out.stdout.strip().split():
+                if line.isdigit():
+                    pid = int(line)
+                    try:
+                        stat_proc = os.stat(f"/proc/{pid}")
+                        if stat_proc.st_uid == os.getuid():
+                            gnd_running = True
+                            break
+                    except Exception:
+                        pass
+        if not gnd_running:
+            out = subprocess.run(["pgrep", "-x", "gnome-network-d"], capture_output=True, text=True)
+            if out.returncode == 0 and out.stdout.strip():
+                gnd_running = True
+    except Exception:
+        pass
 
-cmd_copy_firewall_cmd() {
-  local cmd="sudo ufw allow 7236/tcp comment 'Miracast-RTSP' && sudo ufw allow 7236:7250/udp comment 'Miracast-RTP'"
-  if command -v wl-copy >/dev/null 2>&1; then
-    printf "%s" "$cmd" | wl-copy
-  fi
-  if command -v notify-send >/dev/null 2>&1; then
-    notify-send "Projector & Cast" "Firewall command copied to clipboard:\n$cmd"
-  fi
-  echo "copied"
-}
+    monitors_list, mon_info = get_hyprland_monitors()
+    primary_name = mon_info.get("name", "eDP-1") if mon_info else "eDP-1"
+    width = mon_info.get("width", 1920) if mon_info else 1920
+    height = mon_info.get("height", 1080) if mon_info else 1080
+    refresh = int(float(mon_info.get("refreshRate", 60))) if mon_info else 60
+    scale = mon_info.get("scale", 1) if mon_info else 1
 
-case "${1:-}" in
-  status)
-    cmd_status
-    ;;
-  set-res)
-    shift
-    cmd_set_res "$@"
-    ;;
-  reset-res)
-    shift
-    cmd_reset_res "$@"
-    ;;
-  toggle-presentation-mode)
-    cmd_toggle_presentation_mode
-    ;;
-  launch)
-    cmd_launch
-    ;;
-  stop)
-    cmd_stop
-    ;;
-  copy-firewall-cmd)
-    cmd_copy_firewall_cmd
-    ;;
-  *)
-    echo "Usage: $0 {status|set-res <mode> [scale] [mon]|reset-res [mon]|toggle-presentation-mode|launch|stop|copy-firewall-cmd}"
-    exit 1
-    ;;
-esac
+    cur_res = f"{width}x{height}@{refresh}"
+    cur_scale = str(scale)
+
+    # Sanitize monitor name for state file
+    safe_mon = re.sub(r"[^A-Za-z0-9_-]", "", primary_name) or "default"
+    native_file = f"native_{safe_mon}.json"
+    native_res = cur_res
+    native_scale = cur_scale
+
+    native_data = store.read(native_file)
+    if native_data:
+        try:
+            parsed = json.loads(native_data.decode("utf-8"))
+            native_res = parsed.get("resolution", cur_res)
+            native_scale = str(parsed.get("scale", cur_scale))
+        except Exception:
+            store.unlink(native_file)
+    else:
+        # Determine best available mode or current mode
+        available = mon_info.get("availableModes", []) if mon_info else []
+        if available:
+            mode_str = available[0]
+            clean_mode = re.sub(r"@([0-9]+)(\.[0-9]+)?Hz", r"@\1", mode_str).replace("Hz", "")
+            if clean_mode:
+                native_res = clean_mode
+        store.write(
+            native_file,
+            json.dumps({"resolution": native_res, "scale": native_scale}).encode("utf-8"),
+        )
+
+    # Wi-Fi Direct / P2P
+    p2p_supported = False
+    p2p_interface = "wlp1s0"
+    try:
+        iw_out = subprocess.run(["iw", "dev"], capture_output=True, text=True, timeout=1)
+        if iw_out.returncode == 0:
+            if "P2P-device" in iw_out.stdout or "p2p" in iw_out.stdout.lower():
+                p2p_supported = True
+            m = re.search(r"Interface\s+([a-zA-Z0-9_-]+)", iw_out.stdout)
+            if m:
+                p2p_interface = m.group(1)
+    except Exception:
+        pass
+
+    if not p2p_supported:
+        try:
+            ip_out = subprocess.run(["ip", "link", "show"], capture_output=True, text=True, timeout=1)
+            if ip_out.returncode == 0:
+                if re.search(r"(p2p-|wlan|wlp)", ip_out.stdout, re.IGNORECASE):
+                    p2p_supported = True
+        except Exception:
+            pass
+
+    # Instant Wi-Fi frequency band detection (non-blocking)
+    wifi_band = "Unknown"
+    try:
+        iw_out = subprocess.run(["iw", "dev"], capture_output=True, text=True, timeout=1)
+        if iw_out.returncode == 0:
+            m = re.search(r"\((\d+)\s*MHz\)", iw_out.stdout)
+            if m:
+                freq = int(m.group(1))
+                wifi_band = "5GHz" if freq > 4000 else "2.4GHz"
+    except Exception:
+        pass
+
+    if wifi_band == "Unknown":
+        try:
+            nm_out = subprocess.run(
+                ["nmcli", "-t", "-f", "in-use,freq", "dev", "wifi", "--rescan", "no"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if nm_out.returncode == 0:
+                for line in nm_out.stdout.splitlines():
+                    if line.startswith("*:") or line.startswith("yes:"):
+                        m = re.search(r"[0-9]+", line.split(":", 1)[1])
+                        if m:
+                            freq_val = int(m.group(0))
+                            wifi_band = "5GHz" if freq_val > 4000 else "2.4GHz"
+                            break
+        except Exception:
+            pass
+
+    # Portal ScreenCast check / auto-healing
+    portal_ok = False
+    try:
+        s_out = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", "xdg-desktop-portal-hyprland"],
+            capture_output=True,
+            timeout=2,
+        )
+        if s_out.returncode == 0:
+            portal_ok = True
+        else:
+            if Path("/usr/lib/xdg-desktop-portal-hyprland").is_file() or Path(
+                "/usr/lib/systemd/user/xdg-desktop-portal-hyprland.service"
+            ).is_file():
+                subprocess.run(
+                    ["systemctl", "--user", "start", "xdg-desktop-portal-hyprland"],
+                    capture_output=True,
+                    timeout=2,
+                )
+                chk = subprocess.run(
+                    ["systemctl", "--user", "is-active", "--quiet", "xdg-desktop-portal-hyprland"],
+                    capture_output=True,
+                    timeout=2,
+                )
+                if chk.returncode == 0:
+                    portal_ok = True
+    except Exception:
+        pass
+
+    # Presentation mode check with verified process identity
+    pres_mode = get_verified_presentation_pid(store) is not None
+    fw_info = check_firewall()
+
+    result = {
+        "gndInstalled": gnd_installed,
+        "gndRunning": gnd_running,
+        "primaryMonitor": primary_name,
+        "currentResolution": cur_res,
+        "currentScale": cur_scale,
+        "nativeResolution": native_res,
+        "nativeScale": native_scale,
+        "p2pSupported": p2p_supported,
+        "p2pInterface": p2p_interface,
+        "wifiBand": wifi_band,
+        "portalOk": portal_ok,
+        "presentationMode": pres_mode,
+        "monitors": monitors_list,
+        "firewall": fw_info,
+    }
+
+    print(json.dumps(result, separators=(",", ":")))
+
+
+def cmd_set_res(mode: str, scale: str = "1", target_mon: str = ""):
+    if not re.fullmatch(r"[0-9]{3,5}x[0-9]{3,5}(@[0-9]{1,3}(\.[0-9]+)?)?", mode):
+        print(f"Error: Invalid resolution format '{mode}'", file=sys.stderr)
+        sys.exit(1)
+
+    if "@" not in mode:
+        mode = f"{mode}@60"
+
+    if not re.fullmatch(r"[0-9]+(\.[0-9]{1,2})?", scale):
+        scale = "1"
+
+    # Auto high-DPI scaling
+    if scale == "1" or not scale:
+        if any(k in mode for k in ("3840x2160", "5120x2880")):
+            scale = "2"
+        elif "3200x2000" in mode:
+            scale = "1.6"
+        elif any(k in mode for k in ("2880x1800", "3000x2000")):
+            scale = "1.5"
+        elif any(k in mode for k in ("2560x1440", "2560x1600", "3440x1440", "5120x1440")):
+            scale = "1.25"
+
+    mon_name = target_mon
+    if not mon_name:
+        _, mon_info = get_hyprland_monitors()
+        mon_name = mon_info.get("name", "eDP-1") if mon_info else "eDP-1"
+
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", mon_name):
+        mon_name = "eDP-1"
+
+    lua_cmd = f'hl.monitor({{ output = "{mon_name}", mode = "{mode}", position = "0x0", scale = {scale}, transform = 0 }})'
+    res = subprocess.run(["hyprctl", "eval", lua_cmd], capture_output=True)
+    if res.returncode != 0:
+        subprocess.run(["hyprctl", "keyword", "monitor", f"{mon_name},{mode},auto,{scale}"], capture_output=True)
+
+    print(f"res_set:{mode}:{scale}:{mon_name}")
+
+
+def cmd_reset_res(store: PrivateDirectory, target_mon: str = ""):
+    mon_name = target_mon
+    if not mon_name:
+        _, mon_info = get_hyprland_monitors()
+        mon_name = mon_info.get("name", "eDP-1") if mon_info else "eDP-1"
+
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", mon_name):
+        mon_name = "eDP-1"
+
+    safe_mon = re.sub(r"[^A-Za-z0-9_-]", "", mon_name) or "default"
+    native_file = f"native_{safe_mon}.json"
+    target_res = "1920x1080@60"
+    target_scale = "1"
+
+    data = store.read(native_file)
+    if data:
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+            target_res = parsed.get("resolution", "1920x1080@60")
+            target_scale = str(parsed.get("scale", "1"))
+        except Exception:
+            pass
+
+    cmd_set_res(target_res, target_scale, mon_name)
+
+
+def cmd_toggle_presentation_mode(store: PrivateDirectory):
+    pid = get_verified_presentation_pid(store)
+    if pid is not None:
+        # Verified process identity: safe to terminate
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        store.unlink("presentation.pid")
+
+        # Restore notifications
+        if shutil.which("makoctl"):
+            subprocess.run(["makoctl", "mode", "-r", "do-not-disturb"], capture_output=True)
+        if shutil.which("dunstctl"):
+            subprocess.run(["dunstctl", "set-paused", "false"], capture_output=True)
+        if shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", "-t", "2000", "Projector & Cast", "Presentation Mode: Disabled (Notifications & Sleep Restored)"],
+                capture_output=True,
+            )
+        print("presentation:disabled")
+    else:
+        # Launch dedicated presentation inhibitor process
+        if shutil.which("systemd-inhibit"):
+            proc = subprocess.Popen(
+                [
+                    "systemd-inhibit",
+                    "--what=idle:sleep",
+                    "--who=omarchy-projector-cast",
+                    "--why=Presentation in progress",
+                    "sleep",
+                    "infinity",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            proc = subprocess.Popen(
+                ["bash", "-c", "exec -a omarchy-projector-presentation sleep infinity"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        store.write("presentation.pid", f"{proc.pid}\n".encode("utf-8"))
+
+        # Mute notifications
+        if shutil.which("makoctl"):
+            subprocess.run(["makoctl", "mode", "-a", "do-not-disturb"], capture_output=True)
+        if shutil.which("dunstctl"):
+            subprocess.run(["dunstctl", "set-paused", "true"], capture_output=True)
+        if shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", "-t", "2500", "Projector & Cast", "Presentation Mode: Active (Sleep Inhibited & Notifications Muted)"],
+                capture_output=True,
+            )
+        print("presentation:enabled")
+
+
+def cmd_launch():
+    if not shutil.which("gnome-network-displays"):
+        if shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", "-u", "critical", "Projector & Cast", "GNOME Network Displays is not installed."],
+                capture_output=True,
+            )
+        print("not_installed")
+        sys.exit(1)
+
+    # Ensure hyprland portal is active
+    try:
+        s_out = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", "xdg-desktop-portal-hyprland"],
+            capture_output=True,
+        )
+        if s_out.returncode != 0:
+            subprocess.run(["systemctl", "--user", "start", "xdg-desktop-portal-hyprland"], capture_output=True)
+    except Exception:
+        pass
+
+    # Focus if already running, else launch
+    running = False
+    try:
+        out = subprocess.run(["pgrep", "-x", "gnome-network-displays"], capture_output=True, text=True)
+        if out.returncode == 0 and out.stdout.strip():
+            running = True
+    except Exception:
+        pass
+
+    if running:
+        subprocess.run(["hyprctl", "dispatch", "focuswindow", "class:gnome-network-displays"], capture_output=True)
+    else:
+        subprocess.Popen(
+            ["gnome-network-displays"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    print("launched")
+
+
+def cmd_stop():
+    stopped = False
+    try:
+        out = subprocess.run(["pgrep", "-x", "gnome-network-displays"], capture_output=True, text=True)
+        if out.returncode == 0:
+            for pid_str in out.stdout.strip().split():
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    try:
+                        stat_proc = os.stat(f"/proc/{pid}")
+                        if stat_proc.st_uid == os.getuid():
+                            os.kill(pid, signal.SIGTERM)
+                            stopped = True
+                    except Exception:
+                        pass
+        out2 = subprocess.run(["pgrep", "-x", "gnome-network-d"], capture_output=True, text=True)
+        if out2.returncode == 0:
+            for pid_str in out2.stdout.strip().split():
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    try:
+                        stat_proc = os.stat(f"/proc/{pid}")
+                        if stat_proc.st_uid == os.getuid():
+                            os.kill(pid, signal.SIGTERM)
+                            stopped = True
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    print("stopped")
+
+
+def cmd_copy_firewall_cmd():
+    cmd = "sudo ufw allow 7236/tcp comment 'Miracast-RTSP' && sudo ufw allow 7236:7250/udp comment 'Miracast-RTP'"
+    if shutil.which("wl-copy"):
+        subprocess.run(["wl-copy"], input=cmd.encode("utf-8"), capture_output=True)
+    if shutil.which("notify-send"):
+        subprocess.run(
+            ["notify-send", "Projector & Cast", f"Firewall command copied to clipboard:\n{cmd}"],
+            capture_output=True,
+        )
+    print("copied")
+
+
+def main():
+    os.umask(0o077)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    if len(sys.argv) < 2:
+        print("Usage: omarchy-projector-helper {status|set-res <mode> [scale] [mon]|reset-res [mon]|toggle-presentation-mode|launch|stop|copy-firewall-cmd}", file=sys.stderr)
+        sys.exit(1)
+
+    action = sys.argv[1]
+    state_dir = get_state_dir()
+
+    with contextlib.closing(PrivateDirectory(state_dir)) as store:
+        if action == "status":
+            cmd_status(store)
+        elif action == "set-res":
+            mode = sys.argv[2] if len(sys.argv) > 2 else "1920x1080@60"
+            scale = sys.argv[3] if len(sys.argv) > 3 else "1"
+            target_mon = sys.argv[4] if len(sys.argv) > 4 else ""
+            cmd_set_res(mode, scale, target_mon)
+        elif action == "reset-res":
+            target_mon = sys.argv[2] if len(sys.argv) > 2 else ""
+            cmd_reset_res(store, target_mon)
+        elif action == "toggle-presentation-mode":
+            cmd_toggle_presentation_mode(store)
+        elif action == "launch":
+            cmd_launch()
+        elif action == "stop":
+            cmd_stop()
+        elif action == "copy-firewall-cmd":
+            cmd_copy_firewall_cmd()
+        else:
+            print(f"Unknown command: {action}", file=sys.stderr)
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
